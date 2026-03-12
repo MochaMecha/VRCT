@@ -61,6 +61,8 @@ const useStartPython = () => {
                 "jackd",
                 "JackShmReadWritePtr",
                 "Cannot connect to server",
+                "connect(2) call to",       // JACK socket not found
+                "/dev/shm/jack",
                 "warnings.warn",
                 "SyntaxWarning",
                 "invalid escape sequence",
