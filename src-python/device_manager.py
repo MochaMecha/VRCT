@@ -65,12 +65,16 @@ except Exception:  # pragma: no cover - optional runtime
 from utils import errorLogging
 
 
-def _get_pulse_monitor_sources() -> List[Dict[str, Any]]:
+def _get_pulse_monitor_sources(pyaudio_instance=None) -> List[Dict[str, Any]]:
     """Return PulseAudio/PipeWire monitor sources as dicts compatible with the speaker device list.
 
     Each dict contains: index (PyAudio device index for 'pulse'), name (human-readable),
     defaultSampleRate, maxInputChannels, and _pulse_source (the PA source name to set via
     PULSE_SOURCE before opening the stream).
+
+    If *pyaudio_instance* is provided it is reused to look up the 'pulse'
+    device index, avoiding a second PortAudio initialisation (which can
+    segfault on some systems).
     """
     if sys.platform != "linux":
         return []
@@ -89,21 +93,25 @@ def _get_pulse_monitor_sources() -> List[Dict[str, Any]]:
     # Find the PyAudio device index for 'pulse' (fallback to 'default')
     pulse_device_index = None
     try:
-        with _suppress_alsa_errors():
-            p = PyAudio()
-            try:
+        p = pyaudio_instance
+        owns_p = p is None
+        if owns_p:
+            with _suppress_alsa_errors():
+                p = PyAudio()
+        try:
+            for i in range(p.get_device_count()):
+                dev = p.get_device_info_by_index(i)
+                if dev.get("name") == "pulse" and dev.get("maxInputChannels", 0) > 0:
+                    pulse_device_index = i
+                    break
+            if pulse_device_index is None:
                 for i in range(p.get_device_count()):
                     dev = p.get_device_info_by_index(i)
-                    if dev.get("name") == "pulse" and dev.get("maxInputChannels", 0) > 0:
+                    if dev.get("name") == "default" and dev.get("maxInputChannels", 0) > 0:
                         pulse_device_index = i
                         break
-                if pulse_device_index is None:
-                    for i in range(p.get_device_count()):
-                        dev = p.get_device_info_by_index(i)
-                        if dev.get("name") == "default" and dev.get("maxInputChannels", 0) > 0:
-                            pulse_device_index = i
-                            break
-            finally:
+        finally:
+            if owns_p:
                 p.terminate()
     except Exception:
         return []
@@ -331,7 +339,7 @@ class DeviceManager:
                     else:
                         # Linux: use PulseAudio/PipeWire monitor sources to capture
                         # desktop audio (equivalent of WASAPI loopback on Windows).
-                        speaker_devices = _get_pulse_monitor_sources()
+                        speaker_devices = _get_pulse_monitor_sources(pyaudio_instance=p)
 
                     # deduplicate and sort
                     speaker_devices = [dict(t) for t in {tuple(d.items()) for d in speaker_devices}] or [{"index": -1, "name": "NoDevice"}]

@@ -106,6 +106,7 @@ install_system_deps() {
                 libfontconfig1-dev \
                 libasound2-dev \
                 portaudio19-dev \
+                pulseaudio-utils \
                 "$py_pkg" \
                 "$py_venv_pkg" \
                 "$py_dev_pkg" \
@@ -135,6 +136,7 @@ install_system_deps() {
                 fontconfig \
                 alsa-lib \
                 portaudio \
+                libpulse \
                 python \
                 python-pip \
                 patchelf
@@ -171,6 +173,7 @@ install_system_deps() {
                 fontconfig-devel \
                 alsa-lib-devel \
                 portaudio-devel \
+                pulseaudio-utils \
                 python3 \
                 python3-devel \
                 python3-pip \
