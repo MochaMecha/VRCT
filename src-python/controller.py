@@ -1376,9 +1376,12 @@ class Controller:
 
     def setSelectedSpeakerDevice(self, data, *args, **kwargs) -> dict:
         config.SELECTED_SPEAKER_DEVICE = data
+        if config.ENABLE_TRANSCRIPTION_RECEIVE is True:
+            self.stopThreadingTranscriptionReceiveMessage()
+            self.startThreadingTranscriptionReceiveMessage()
         if config.ENABLE_CHECK_ENERGY_RECEIVE is True:
             self.stopThreadingCheckSpeakerEnergy()
-            self.startThreadingTranscriptionReceiveMessage()
+            self.startThreadingCheckSpeakerEnergy()
         return {"status":200, "result":config.SELECTED_SPEAKER_DEVICE}
 
     @staticmethod
