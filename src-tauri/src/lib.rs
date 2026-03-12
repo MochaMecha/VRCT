@@ -2,6 +2,16 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Workaround: WebKitGTK + Wayland can trigger "Protocol error" when
+    // compositing is used with transparent, undecorated windows.
+    // Disabling compositing mode avoids this on affected compositors (e.g. Mutter/GNOME).
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").is_err() {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
+    }
+
     tauri::Builder::default()
         .setup(|app| {
             let _main_window = app.get_webview_window("main").unwrap();  // `main_window` is declared here for all builds
