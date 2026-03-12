@@ -78,7 +78,12 @@ class PulseMonitorSource(AudioSource):
             self.stream = None
 
     class _ParecStream:
-        """Wraps parec stdout to match the MicrophoneStream.read() interface."""
+        """Wraps parec stdout to match the MicrophoneStream interface.
+
+        speech_recognition.Recognizer accesses ``stream.pyaudio_stream``
+        directly (e.g. ``get_read_available``), so this object also acts
+        as its own ``pyaudio_stream`` with compatible stubs.
+        """
 
         def __init__(self, process, chunk_size, channels):
             self._process = process
@@ -86,13 +91,25 @@ class PulseMonitorSource(AudioSource):
             self._channels = channels
             # bytes per read = chunk_size frames * channels * 2 bytes (s16le)
             self._read_size = chunk_size * channels * 2
+            # Recognizer accesses stream.pyaudio_stream directly
+            self.pyaudio_stream = self
 
-        def read(self, size):
+        def read(self, size, exception_on_overflow=False):
             data = self._process.stdout.read(self._read_size)
             if not data:
                 # Process ended; return silence
                 return b"\x00" * self._read_size
             return data
+
+        def get_read_available(self):
+            # parec always has data available (blocking read)
+            return self._chunk_size
+
+        def is_stopped(self):
+            return self._process.poll() is not None
+
+        def stop_stream(self):
+            pass
 
         def close(self):
             pass  # cleanup handled by __exit__
