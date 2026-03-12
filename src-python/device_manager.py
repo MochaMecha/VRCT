@@ -11,8 +11,11 @@ except Exception:  # pragma: no cover - optional runtime
 try:
     from pyaudiowpatch import PyAudio, paWASAPI
 except Exception:  # pragma: no cover - optional runtime
-    PyAudio = None  # type: ignore
     paWASAPI = None  # type: ignore
+    try:
+        from pyaudio import PyAudio
+    except Exception:
+        PyAudio = None  # type: ignore
 
 try:
     from pycaw.callbacks import MMNotificationClient
@@ -159,7 +162,7 @@ class DeviceManager:
                     device_count = host.get('deviceCount', 0)
                     for device_index in range(device_count):
                         device = p.get_device_info_by_host_api_device_index(host_index, device_index)
-                        if device.get("maxInputChannels", 0) > 0 and not device.get("isLoopbackDevice", True):
+                        if device.get("maxInputChannels", 0) > 0 and not device.get("isLoopbackDevice", False):
                             buffer_mic_devices.setdefault(host["name"], []).append(device)
                 if not buffer_mic_devices:
                     buffer_mic_devices = {"NoHost": [{"index": -1, "name": "NoDevice"}]}
@@ -179,9 +182,10 @@ class DeviceManager:
                         continue
                     break
 
-                # collect speaker loopback devices (requires WASAPI)
+                # collect speaker/output devices
                 speaker_devices: List[Dict[str, Any]] = []
                 if paWASAPI is not None:
+                    # Windows: use WASAPI loopback devices
                     try:
                         wasapi_info = p.get_host_api_info_by_type(paWASAPI)
                         wasapi_name = wasapi_info.get("name")
@@ -193,11 +197,27 @@ class DeviceManager:
                                     device = p.get_device_info_by_host_api_device_index(host_index, device_index)
                                     if not device.get("isLoopbackDevice", True):
                                         for loopback in p.get_loopback_device_info_generator():
-                                            # match by name inclusion
                                             if device.get("name") in loopback.get("name", ""):
                                                 speaker_devices.append(loopback)
                     except Exception:
-                        # WASAPI not available or failed; ignore and continue
+                        pass
+                else:
+                    # Linux: PulseAudio/PipeWire expose monitor sources as input
+                    # devices with "Monitor" in the name. Also list output devices.
+                    try:
+                        for host_index in range(p.get_host_api_count()):
+                            host = p.get_host_api_info_by_index(host_index)
+                            device_count = host.get('deviceCount', 0)
+                            for device_index in range(device_count):
+                                device = p.get_device_info_by_host_api_device_index(host_index, device_index)
+                                name = device.get("name", "")
+                                # Monitor sources (for capturing system audio)
+                                if device.get("maxInputChannels", 0) > 0 and "monitor" in name.lower():
+                                    speaker_devices.append(device)
+                                # Regular output devices
+                                elif device.get("maxOutputChannels", 0) > 0:
+                                    speaker_devices.append(device)
+                    except Exception:
                         pass
 
                 # deduplicate and sort
@@ -206,6 +226,7 @@ class DeviceManager:
 
                 # default speaker
                 if paWASAPI is not None:
+                    # Windows: find WASAPI default output loopback
                     try:
                         wasapi_info = p.get_host_api_info_by_type(paWASAPI)
                         default_speaker_device_index = wasapi_info.get("defaultOutputDevice", -1)
@@ -226,7 +247,16 @@ class DeviceManager:
                             if buffer_default_speaker_device["device"].get("name") != "NoDevice":
                                 break
                     except Exception:
-                        # best-effort; ignore failures
+                        pass
+                else:
+                    # Linux: use the default output device from the default host API
+                    try:
+                        api_info = p.get_default_host_api_info()
+                        default_output_index = api_info.get("defaultOutputDevice", -1)
+                        if default_output_index >= 0:
+                            device = p.get_device_info_by_index(default_output_index)
+                            buffer_default_speaker_device = {"device": device}
+                    except Exception:
                         pass
 
         except Exception:
