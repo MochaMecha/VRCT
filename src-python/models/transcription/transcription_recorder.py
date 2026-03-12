@@ -5,10 +5,13 @@ They intentionally keep a thin API so the rest of the system can mock them
 in tests.
 """
 
+import io
 import os
+import struct
+import subprocess
 import sys
 from typing import Any
-from speech_recognition import Recognizer, Microphone
+from speech_recognition import Recognizer, Microphone, AudioSource
 try:
     from pyaudiowpatch import get_sample_size, paInt16
 except ImportError:
@@ -16,44 +19,123 @@ except ImportError:
 from datetime import datetime
 
 
-def _set_pulse_source(device: dict, mic_instance: Microphone = None) -> None:
-    """Tag a Microphone instance with the PulseAudio source it should use.
+# ---------------------------------------------------------------------------
+# PulseMonitorSource — captures desktop/speaker audio on Linux via parec
+# ---------------------------------------------------------------------------
 
-    On Linux, speaker capture requires setting the PULSE_SOURCE env-var to
-    a monitor source name *before* the PyAudio stream is opened (which
-    happens in Microphone.__enter__).  We store the source name on the
-    Microphone object and rely on _patch_microphone_enter() to set/clear
-    the env-var at the right time, preventing it from leaking into mic
-    streams.
+class PulseMonitorSource(AudioSource):
+    """AudioSource that captures from a PulseAudio/PipeWire monitor source.
+
+    On Linux, "speaker capture" means recording whatever audio is playing
+    through an output device.  PulseAudio/PipeWire expose these as *monitor
+    sources*.  This class uses ``parec`` to read raw PCM from a named monitor
+    source, completely bypassing PyAudio and avoiding any env-var races.
+
+    It implements the same interface as ``speech_recognition.Microphone`` so
+    it can be used as a drop-in replacement wherever Recognizer expects an
+    AudioSource.
+    """
+
+    def __init__(self, pulse_source_name: str, sample_rate: int = 48000,
+                 chunk_size: int = 1024, channels: int = 2):
+        self._pulse_source = pulse_source_name
+        self.SAMPLE_RATE = sample_rate
+        self.SAMPLE_WIDTH = 2  # 16-bit (s16le)
+        self.CHUNK = chunk_size
+        self.channels = channels
+        self.stream = None
+        self._process = None
+
+    def __enter__(self):
+        assert self.stream is None, "This audio source is already inside a context manager"
+        self._process = subprocess.Popen(
+            [
+                "parec",
+                "--device=" + self._pulse_source,
+                "--format=s16le",
+                "--channels=" + str(self.channels),
+                "--rate=" + str(self.SAMPLE_RATE),
+                "--raw",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        self.stream = PulseMonitorSource._ParecStream(self._process, self.CHUNK, self.channels)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self._process is not None:
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=2)
+            except Exception:
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
+            self._process = None
+        if self.stream is not None:
+            self.stream = None
+
+    class _ParecStream:
+        """Wraps parec stdout to match the MicrophoneStream.read() interface."""
+
+        def __init__(self, process, chunk_size, channels):
+            self._process = process
+            self._chunk_size = chunk_size
+            self._channels = channels
+            # bytes per read = chunk_size frames * channels * 2 bytes (s16le)
+            self._read_size = chunk_size * channels * 2
+
+        def read(self, size):
+            data = self._process.stdout.read(self._read_size)
+            if not data:
+                # Process ended; return silence
+                return b"\x00" * self._read_size
+            return data
+
+        def close(self):
+            pass  # cleanup handled by __exit__
+
+
+def _is_linux():
+    return sys.platform == "linux"
+
+
+def _make_speaker_source(device: dict):
+    """Create the appropriate audio source for speaker/desktop capture.
+
+    On Linux with a ``_pulse_source`` key, returns a PulseMonitorSource
+    (uses parec subprocess).  Otherwise falls back to Microphone(speaker=True)
+    for Windows WASAPI loopback compatibility.
     """
     pulse_src = device.get("_pulse_source") if isinstance(device, dict) else None
-    if pulse_src and sys.platform == "linux" and mic_instance is not None:
-        mic_instance._vrct_pulse_source = pulse_src
+    if pulse_src and _is_linux():
+        sample_rate = int(device.get("defaultSampleRate", 48000))
+        channels = int(device.get("maxInputChannels", 2))
+        return PulseMonitorSource(
+            pulse_source_name=pulse_src,
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+    # Windows / fallback: use PyAudio WASAPI loopback via Microphone
+    device_index = int(device.get('index', -1))
+    sample_rate = int(device.get("defaultSampleRate", 16000))
+    channels = int(device.get("maxInputChannels", 1))
+    if device_index < 0:
+        raise ValueError("invalid device index")
+    return Microphone(
+        speaker=True,
+        device_index=device_index,
+        sample_rate=sample_rate,
+        chunk_size=get_sample_size(paInt16),
+        channels=channels,
+    )
 
 
-# Monkey-patch Microphone.__enter__ once to manage PULSE_SOURCE per-instance.
-_orig_mic_enter = Microphone.__enter__
-
-def _patched_mic_enter(self):
-    pulse_src = getattr(self, "_vrct_pulse_source", None)
-    old_val = os.environ.get("PULSE_SOURCE")
-    if pulse_src:
-        os.environ["PULSE_SOURCE"] = pulse_src
-    else:
-        # Ensure mic streams are NOT affected by a stale PULSE_SOURCE
-        os.environ.pop("PULSE_SOURCE", None)
-    try:
-        return _orig_mic_enter(self)
-    except Exception:
-        # Restore on failure
-        if old_val is None:
-            os.environ.pop("PULSE_SOURCE", None)
-        else:
-            os.environ["PULSE_SOURCE"] = old_val
-        raise
-
-Microphone.__enter__ = _patched_mic_enter
-
+# ---------------------------------------------------------------------------
+# Recorder classes
+# ---------------------------------------------------------------------------
 
 class BaseRecorder:
     def __init__(self, source: Any, energy_threshold: int, dynamic_energy_threshold: bool, record_timeout: int) -> None:
@@ -106,23 +188,12 @@ class SelectedMicRecorder(BaseRecorder):
 class SelectedSpeakerRecorder(BaseRecorder):
     def __init__(self, device: dict, energy_threshold: int, dynamic_energy_threshold: bool, record_timeout: int) -> None:
         try:
-            device_index = int(device.get('index', -1))
-            sample_rate = int(device.get("defaultSampleRate", 16000))
-            channels = int(device.get("maxInputChannels", 1))
-            if device_index < 0:
-                raise ValueError("invalid device index")
-            source = Microphone(speaker=True,
-                device_index=device_index,
-                sample_rate=sample_rate,
-                chunk_size=get_sample_size(paInt16),
-                channels=channels
-            )
+            source = _make_speaker_source(device)
         except Exception:
             try:
                 source = Microphone(speaker=True)
             except Exception:
                 raise
-        _set_pulse_source(device, source)
         super().__init__(source=source, energy_threshold=energy_threshold, dynamic_energy_threshold=dynamic_energy_threshold, record_timeout=record_timeout)
         # self.adjustForNoise()
 
@@ -173,22 +244,12 @@ class SelectedMicEnergyRecorder(BaseEnergyRecorder):
 class SelectedSpeakerEnergyRecorder(BaseEnergyRecorder):
     def __init__(self, device: dict) -> None:
         try:
-            device_index = int(device.get('index', -1))
-            sample_rate = int(device.get("defaultSampleRate", 16000))
-            channels = int(device.get("maxInputChannels", 1))
-            if device_index < 0:
-                raise ValueError("invalid device index")
-            source = Microphone(speaker=True,
-                device_index=device_index,
-                sample_rate=sample_rate,
-                channels=channels
-            )
+            source = _make_speaker_source(device)
         except Exception:
             try:
                 source = Microphone(speaker=True)
             except Exception:
                 raise
-        _set_pulse_source(device, source)
         super().__init__(source=source)
         # self.adjustForNoise()
 
@@ -283,23 +344,12 @@ class SelectedSpeakerEnergyAndAudioRecorder(BaseEnergyAndAudioRecorder):
     ) -> None:
 
         try:
-            device_index = int(device.get('index', -1))
-            sample_rate = int(device.get("defaultSampleRate", 16000))
-            channels = int(device.get("maxInputChannels", 1))
-            if device_index < 0:
-                raise ValueError("invalid device index")
-            source = Microphone(speaker=True,
-                device_index=device_index,
-                sample_rate=sample_rate,
-                chunk_size=get_sample_size(paInt16),
-                channels=channels,
-            )
+            source = _make_speaker_source(device)
         except Exception:
             try:
                 source = Microphone(speaker=True)
             except Exception:
                 raise
-        _set_pulse_source(device, source)
         super().__init__(
             source=source,
             energy_threshold=energy_threshold,
