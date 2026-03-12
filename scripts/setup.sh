@@ -88,6 +88,8 @@ install_system_deps() {
                 curl \
                 wget \
                 git \
+                rustc \
+                cargo \
                 libwebkit2gtk-4.1-dev \
                 libgtk-3-dev \
                 libayatana-appindicator3-dev \
@@ -114,6 +116,7 @@ install_system_deps() {
                 curl \
                 wget \
                 git \
+                rust \
                 webkit2gtk-4.1 \
                 gtk3 \
                 libayatana-appindicator \
@@ -146,6 +149,8 @@ install_system_deps() {
                 curl \
                 wget \
                 git \
+                rust \
+                cargo \
                 webkit2gtk4.1-devel \
                 gtk3-devel \
                 libappindicator-gtk3-devel \
@@ -179,15 +184,24 @@ install_system_deps() {
 # ── Rust Toolchain ──────────────────────────────────────────────────
 
 install_rust() {
-    if command -v rustc &>/dev/null; then
-        local rust_ver
-        rust_ver="$(rustc --version | awk '{print $2}')"
-        ok "Rust already installed: $rust_ver"
+    # Source cargo env if it exists (handles prior rustup installs)
+    if [ -f "$HOME/.cargo/env" ]; then
+        source "$HOME/.cargo/env"
+    fi
+
+    if command -v rustc &>/dev/null && command -v cargo &>/dev/null; then
+        ok "Rust already installed: rustc $(rustc --version | awk '{print $2}'), cargo $(cargo --version | awk '{print $2}')"
     else
         info "Installing Rust via rustup..."
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
         source "$HOME/.cargo/env"
-        ok "Rust installed: $(rustc --version | awk '{print $2}')"
+
+        # Verify both are now available
+        if ! command -v rustc &>/dev/null || ! command -v cargo &>/dev/null; then
+            err "Rust installation failed. Please install manually: https://rustup.rs"
+            exit 1
+        fi
+        ok "Rust installed: rustc $(rustc --version | awk '{print $2}'), cargo $(cargo --version | awk '{print $2}')"
     fi
 }
 
