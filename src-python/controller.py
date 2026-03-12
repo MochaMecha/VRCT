@@ -1205,9 +1205,12 @@ class Controller:
 
     def setSelectedMicDevice(self, data, *args, **kwargs) -> dict:
         config.SELECTED_MIC_DEVICE = data
+        if config.ENABLE_TRANSCRIPTION_SEND is True:
+            self.stopThreadingTranscriptionSendMessage()
+            self.startThreadingTranscriptionSendMessage()
         if config.ENABLE_CHECK_ENERGY_SEND is True:
             self.stopThreadingCheckMicEnergy()
-            self.startThreadingTranscriptionSendMessage()
+            self.startThreadingCheckMicEnergy()
         return {"status":200, "result": config.SELECTED_MIC_DEVICE}
 
     @staticmethod
