@@ -73,6 +73,15 @@ install_system_deps() {
     case "$DISTRO_FAMILY" in
         debian)
             sudo apt-get update
+            # Try to install python3.12 explicitly; fall back to default python3
+            local py_pkg="python3"
+            local py_dev_pkg="python3-dev"
+            local py_venv_pkg="python3-venv"
+            if apt-cache show python3.12 &>/dev/null; then
+                py_pkg="python3.12"
+                py_dev_pkg="python3.12-dev"
+                py_venv_pkg="python3.12-venv"
+            fi
             sudo apt-get install -y \
                 build-essential \
                 pkg-config \
@@ -93,9 +102,9 @@ install_system_deps() {
                 libfontconfig1-dev \
                 libasound2-dev \
                 portaudio19-dev \
-                python3 \
-                python3-venv \
-                python3-dev \
+                "$py_pkg" \
+                "$py_venv_pkg" \
+                "$py_dev_pkg" \
                 patchelf
             ;;
         arch)
@@ -122,12 +131,12 @@ install_system_deps() {
                 python \
                 python-pip \
                 patchelf
-            # Arch ships the latest Python; check if python3.12 is available
-            # for venv compatibility with torch
-            if ! command -v python3.12 &>/dev/null; then
-                warn "python3.12 not found. Checking if system python works..."
-                # On Arch the default python3 may be 3.12+ or 3.13+
-                # We'll detect and handle this in the venv step
+            # Arch ships the latest Python which may be too new (3.14+).
+            # python3.12 is typically available from the AUR or as a package.
+            if ! command -v python3.12 &>/dev/null && ! command -v python3.13 &>/dev/null; then
+                warn "python3.12/3.13 not found on PATH."
+                warn "If the system Python is 3.14+, the build will fail."
+                warn "Install python312 from the AUR (e.g. yay -S python312) or use pyenv."
             fi
             ;;
         fedora)
@@ -155,6 +164,12 @@ install_system_deps() {
                 python3-devel \
                 python3-pip \
                 patchelf
+            # Fedora 42+ ships Python 3.14 as default, which breaks deps
+            # that use removed stdlib modules (aifc, etc.). Install 3.12.
+            if ! command -v python3.12 &>/dev/null; then
+                info "Installing Python 3.12 (required — default Python 3.14+ is too new)..."
+                sudo dnf install -y python3.12 python3.12-devel
+            fi
             ;;
     esac
 
@@ -201,31 +216,44 @@ install_node() {
 # ── Python venv ─────────────────────────────────────────────────────
 
 find_python() {
-    # Prefer 3.12 for best compatibility with torch and all deps.
-    # Fall back to 3.11, then 3.13, then generic python3.
-    for candidate in python3.12 python3.11 python3.13 python3; do
+    # Python 3.14+ removed stdlib modules (aifc, etc.) that deps still need.
+    # Python < 3.11 is too old for current torch wheels.
+    # Prefer 3.12, then 3.11, then 3.13. Only fall back to generic python3
+    # if its version is in the acceptable range.
+
+    PYTHON_BIN=""
+
+    for candidate in python3.12 python3.11 python3.13; do
         if command -v "$candidate" &>/dev/null; then
             PYTHON_BIN="$candidate"
             break
         fi
     done
 
-    if [ -z "${PYTHON_BIN:-}" ]; then
-        err "No suitable Python 3 found. Install python3 (3.11-3.13 recommended)."
+    # If none of the versioned binaries exist, check generic python3
+    if [ -z "$PYTHON_BIN" ] && command -v python3 &>/dev/null; then
+        local py_minor
+        py_minor="$(python3 -c 'import sys; print(sys.version_info.minor)')"
+        if [ "$py_minor" -ge 11 ] && [ "$py_minor" -le 13 ]; then
+            PYTHON_BIN="python3"
+        fi
+    fi
+
+    if [ -z "$PYTHON_BIN" ]; then
+        err "No compatible Python found. Python 3.11, 3.12, or 3.13 is required."
+        err "Python 3.14+ is NOT supported (removed stdlib modules break dependencies)."
+        echo ""
+        case "$DISTRO_FAMILY" in
+            fedora)  err "Try: sudo dnf install python3.12 python3.12-devel" ;;
+            debian)  err "Try: sudo apt-get install python3.12 python3.12-venv python3.12-dev" ;;
+            arch)    err "Try: yay -S python312  (from the AUR)" ;;
+        esac
         exit 1
     fi
 
     local py_ver
     py_ver="$($PYTHON_BIN --version 2>&1)"
     info "Using Python: $PYTHON_BIN ($py_ver)"
-
-    # Verify version is in acceptable range
-    local py_minor
-    py_minor="$($PYTHON_BIN -c 'import sys; print(sys.version_info.minor)')"
-    if [ "$py_minor" -lt 11 ] || [ "$py_minor" -gt 13 ]; then
-        warn "Python 3.$py_minor detected. Versions 3.11-3.13 are recommended."
-        warn "torch and other deps may not have wheels for this version."
-    fi
 }
 
 setup_python_venv() {
