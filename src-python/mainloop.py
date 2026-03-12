@@ -5,6 +5,24 @@ from typing import Any, Tuple
 from threading import Thread, Event, Lock
 from queue import Queue, Empty
 import logging
+
+# Patch speech_recognition.Microphone.get_pyaudio so it falls back to
+# standard pyaudio on Linux (the bundled SpeechRecognition only tries
+# pyaudiowpatch which is Windows-only).
+import speech_recognition as _sr
+
+_orig_get_pyaudio = _sr.Microphone.get_pyaudio
+
+@staticmethod
+def _patched_get_pyaudio():
+    try:
+        return _orig_get_pyaudio()
+    except (AttributeError, ImportError):
+        import pyaudio
+        return pyaudio
+
+_sr.Microphone.get_pyaudio = _patched_get_pyaudio
+
 from controller import Controller  # noqa: E402
 from utils import printLog, printResponse, errorLogging, encodeBase64 # noqa: E402
 
