@@ -90,6 +90,8 @@ install_system_deps() {
                 git \
                 rustc \
                 cargo \
+                nodejs \
+                npm \
                 libwebkit2gtk-4.1-dev \
                 libgtk-3-dev \
                 libayatana-appindicator3-dev \
@@ -117,6 +119,8 @@ install_system_deps() {
                 wget \
                 git \
                 rust \
+                nodejs \
+                npm \
                 webkit2gtk-4.1 \
                 gtk3 \
                 libayatana-appindicator \
@@ -151,6 +155,8 @@ install_system_deps() {
                 git \
                 rust \
                 cargo \
+                nodejs \
+                npm \
                 webkit2gtk4.1-devel \
                 gtk3-devel \
                 libappindicator-gtk3-devel \
@@ -208,22 +214,31 @@ install_rust() {
 # ── Node.js ─────────────────────────────────────────────────────────
 
 install_node() {
-    if command -v node &>/dev/null; then
-        local node_ver
-        node_ver="$(node --version)"
-        ok "Node.js already installed: $node_ver"
+    # Source nvm if it exists (handles prior nvm installs)
+    export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+    if [ -s "$NVM_DIR/nvm.sh" ]; then
+        . "$NVM_DIR/nvm.sh"
+    fi
+
+    if command -v node &>/dev/null && command -v npm &>/dev/null && command -v npx &>/dev/null; then
+        ok "Node.js already installed: node $(node --version), npm $(npm --version)"
     else
-        info "Node.js not found. Installing via nvm..."
+        info "Node.js/npm/npx not fully available. Installing via nvm..."
         curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
         export NVM_DIR="$HOME/.nvm"
         [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
         nvm install --lts
-        ok "Node.js installed: $(node --version)"
-    fi
 
-    if ! command -v npm &>/dev/null; then
-        err "npm not found after Node.js install. Check your PATH."
-        exit 1
+        # Verify all three are now available
+        if ! command -v node &>/dev/null || ! command -v npm &>/dev/null || ! command -v npx &>/dev/null; then
+            err "Node.js installation failed. Missing:"
+            command -v node &>/dev/null || err "  - node"
+            command -v npm  &>/dev/null || err "  - npm"
+            command -v npx  &>/dev/null || err "  - npx"
+            err "Install manually: https://nodejs.org or via your package manager."
+            exit 1
+        fi
+        ok "Node.js installed: node $(node --version), npm $(npm --version)"
     fi
 }
 
