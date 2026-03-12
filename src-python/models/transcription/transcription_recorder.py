@@ -16,16 +16,43 @@ except ImportError:
 from datetime import datetime
 
 
-def _set_pulse_source(device: dict) -> None:
-    """On Linux, if *device* carries a ``_pulse_source`` key (set by
-    device_manager for PulseAudio/PipeWire monitor sources), set the
-    PULSE_SOURCE env-var so that PyAudio opens the correct monitor
-    source.  This must remain set for the lifetime of the audio stream
-    (not just during __init__) because Microphone.__enter__ is where
-    the stream is actually opened."""
+def _set_pulse_source(device: dict, mic_instance: Microphone = None) -> None:
+    """Tag a Microphone instance with the PulseAudio source it should use.
+
+    On Linux, speaker capture requires setting the PULSE_SOURCE env-var to
+    a monitor source name *before* the PyAudio stream is opened (which
+    happens in Microphone.__enter__).  We store the source name on the
+    Microphone object and rely on _patch_microphone_enter() to set/clear
+    the env-var at the right time, preventing it from leaking into mic
+    streams.
+    """
     pulse_src = device.get("_pulse_source") if isinstance(device, dict) else None
-    if pulse_src and sys.platform == "linux":
+    if pulse_src and sys.platform == "linux" and mic_instance is not None:
+        mic_instance._vrct_pulse_source = pulse_src
+
+
+# Monkey-patch Microphone.__enter__ once to manage PULSE_SOURCE per-instance.
+_orig_mic_enter = Microphone.__enter__
+
+def _patched_mic_enter(self):
+    pulse_src = getattr(self, "_vrct_pulse_source", None)
+    old_val = os.environ.get("PULSE_SOURCE")
+    if pulse_src:
         os.environ["PULSE_SOURCE"] = pulse_src
+    else:
+        # Ensure mic streams are NOT affected by a stale PULSE_SOURCE
+        os.environ.pop("PULSE_SOURCE", None)
+    try:
+        return _orig_mic_enter(self)
+    except Exception:
+        # Restore on failure
+        if old_val is None:
+            os.environ.pop("PULSE_SOURCE", None)
+        else:
+            os.environ["PULSE_SOURCE"] = old_val
+        raise
+
+Microphone.__enter__ = _patched_mic_enter
 
 
 class BaseRecorder:
@@ -78,7 +105,6 @@ class SelectedMicRecorder(BaseRecorder):
 
 class SelectedSpeakerRecorder(BaseRecorder):
     def __init__(self, device: dict, energy_threshold: int, dynamic_energy_threshold: bool, record_timeout: int) -> None:
-        _set_pulse_source(device)
         try:
             device_index = int(device.get('index', -1))
             sample_rate = int(device.get("defaultSampleRate", 16000))
@@ -96,6 +122,7 @@ class SelectedSpeakerRecorder(BaseRecorder):
                 source = Microphone(speaker=True)
             except Exception:
                 raise
+        _set_pulse_source(device, source)
         super().__init__(source=source, energy_threshold=energy_threshold, dynamic_energy_threshold=dynamic_energy_threshold, record_timeout=record_timeout)
         # self.adjustForNoise()
 
@@ -145,7 +172,6 @@ class SelectedMicEnergyRecorder(BaseEnergyRecorder):
 
 class SelectedSpeakerEnergyRecorder(BaseEnergyRecorder):
     def __init__(self, device: dict) -> None:
-        _set_pulse_source(device)
         try:
             device_index = int(device.get('index', -1))
             sample_rate = int(device.get("defaultSampleRate", 16000))
@@ -162,6 +188,7 @@ class SelectedSpeakerEnergyRecorder(BaseEnergyRecorder):
                 source = Microphone(speaker=True)
             except Exception:
                 raise
+        _set_pulse_source(device, source)
         super().__init__(source=source)
         # self.adjustForNoise()
 
@@ -255,7 +282,6 @@ class SelectedSpeakerEnergyAndAudioRecorder(BaseEnergyAndAudioRecorder):
         record_timeout: int = 5,
     ) -> None:
 
-        _set_pulse_source(device)
         try:
             device_index = int(device.get('index', -1))
             sample_rate = int(device.get("defaultSampleRate", 16000))
@@ -273,6 +299,7 @@ class SelectedSpeakerEnergyAndAudioRecorder(BaseEnergyAndAudioRecorder):
                 source = Microphone(speaker=True)
             except Exception:
                 raise
+        _set_pulse_source(device, source)
         super().__init__(
             source=source,
             energy_threshold=energy_threshold,
