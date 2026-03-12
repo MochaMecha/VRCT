@@ -5,11 +5,11 @@ They intentionally keep a thin API so the rest of the system can mock them
 in tests.
 """
 
-import io
+import collections
 import os
-import struct
 import subprocess
 import sys
+import threading
 from typing import Any
 from speech_recognition import Recognizer, Microphone, AudioSource
 try:
@@ -80,10 +80,21 @@ class PulseMonitorSource(AudioSource):
     class _ParecStream:
         """Wraps parec stdout to match the MicrophoneStream interface.
 
+        A background reader thread continuously drains parec stdout into a
+        small circular buffer (deque).  ``read()`` returns the most recent
+        chunk, discarding anything older.  This prevents audio from
+        accumulating in the pipe buffer while the Recognizer is busy
+        processing a previous phrase — eliminating the "repeating/growing
+        transcription" problem.
+
         speech_recognition.Recognizer accesses ``stream.pyaudio_stream``
         directly (e.g. ``get_read_available``), so this object also acts
         as its own ``pyaudio_stream`` with compatible stubs.
         """
+
+        # Keep at most ~1 second of audio in the buffer.  Older chunks are
+        # silently dropped so the Recognizer always gets fresh audio.
+        _MAX_CHUNKS = 50
 
         def __init__(self, process, chunk_size, channels):
             self._process = process
@@ -91,22 +102,48 @@ class PulseMonitorSource(AudioSource):
             self._channels = channels
             # bytes per read = chunk_size frames * channels * 2 bytes (s16le)
             self._read_size = chunk_size * channels * 2
+            self._silence = b"\x00" * self._read_size
             # Recognizer accesses stream.pyaudio_stream directly
             self.pyaudio_stream = self
 
+            # Circular buffer + condition for blocking reads
+            self._buf = collections.deque(maxlen=self._MAX_CHUNKS)
+            self._cond = threading.Condition()
+            self._stopped = False
+
+            # Reader thread drains parec stdout continuously
+            self._reader = threading.Thread(target=self._drain, daemon=True)
+            self._reader.start()
+
+        def _drain(self):
+            """Continuously read from parec and push into the circular buffer."""
+            try:
+                while True:
+                    data = self._process.stdout.read(self._read_size)
+                    if not data:
+                        break
+                    with self._cond:
+                        self._buf.append(data)
+                        self._cond.notify()
+            finally:
+                with self._cond:
+                    self._stopped = True
+                    self._cond.notify()
+
         def read(self, size, exception_on_overflow=False):
-            data = self._process.stdout.read(self._read_size)
-            if not data:
-                # Process ended; return silence
-                return b"\x00" * self._read_size
-            return data
+            with self._cond:
+                # Wait until there is at least one chunk available
+                while not self._buf and not self._stopped:
+                    self._cond.wait(timeout=0.1)
+                if self._buf:
+                    return self._buf.popleft()
+                return self._silence
 
         def get_read_available(self):
-            # parec always has data available (blocking read)
-            return self._chunk_size
+            return self._chunk_size if self._buf else 0
 
         def is_stopped(self):
-            return self._process.poll() is not None
+            return self._stopped
 
         def stop_stream(self):
             pass
