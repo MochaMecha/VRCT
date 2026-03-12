@@ -1,6 +1,44 @@
 from typing import Callable, Dict, List, Optional, Any
 from time import sleep
 from threading import Thread
+import sys
+import os
+from contextlib import contextmanager
+
+@contextmanager
+def _suppress_alsa_errors():
+    """Suppress ALSA/JACK/PulseAudio stderr noise during PyAudio device enumeration on Linux."""
+    if sys.platform != "linux":
+        yield
+        return
+    try:
+        import ctypes
+        ERROR_HANDLER_FUNC = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_int,
+                                               ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p)
+        def _null_handler(filename, line, function, err, fmt):
+            pass
+        c_null_handler = ERROR_HANDLER_FUNC(_null_handler)
+        try:
+            asound = ctypes.cdll.LoadLibrary("libasound.so.2")
+            asound.snd_lib_error_set_handler(c_null_handler)
+        except OSError:
+            pass
+        # Also redirect stderr to suppress JACK/PipeWire messages
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        old_stderr = os.dup(2)
+        os.dup2(devnull, 2)
+        try:
+            yield
+        finally:
+            os.dup2(old_stderr, 2)
+            os.close(old_stderr)
+            os.close(devnull)
+            try:
+                asound.snd_lib_error_set_handler(None)
+            except Exception:
+                pass
+    except Exception:
+        yield
 
 # Optional, Windows-specific dependencies. Guard imports so module can be imported on non-Windows systems.
 try:
@@ -155,7 +193,7 @@ class DeviceManager:
             return
 
         try:
-            with PyAudio() as p:
+            with _suppress_alsa_errors(), PyAudio() as p:
                 # gather input devices grouped by host
                 for host_index in range(p.get_host_api_count()):
                     host = p.get_host_api_info_by_index(host_index)

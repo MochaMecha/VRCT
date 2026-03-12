@@ -48,10 +48,35 @@ const useStartPython = () => {
             }
         });
         command.stderr.on("data", line => {
-            showNotification_Error(
-                `An error occurred. Please restart VRCT or contact the developers. The last line:${JSON.stringify(line)}`, { hide_duration: null }
-            );
-            console.error("stderr", line);
+            // ALSA, PulseAudio, JACK, and PipeWire dump harmless probe
+            // warnings to stderr when PyAudio enumerates devices on Linux.
+            // Only show the notification for genuine errors.
+            const ignoredPatterns = [
+                "ALSA lib",
+                "Cannot open device",
+                "Unknown PCM",
+                "unable to open slave",
+                "a]",           // e.g. "_snd_pcm_a52_open"
+                "connect to server failed",  // JACK not running
+                "jackd",
+                "JackShmReadWritePtr",
+                "Cannot connect to server",
+                "warnings.warn",
+                "SyntaxWarning",
+                "invalid escape sequence",
+                "UserWarning",
+                "FutureWarning",
+                "DeprecationWarning",
+            ];
+            const isIgnored = ignoredPatterns.some(p => line.includes(p));
+            if (isIgnored) {
+                console.warn("stderr (suppressed):", line);
+            } else {
+                showNotification_Error(
+                    `An error occurred. Please restart VRCT or contact the developers. The last line:${JSON.stringify(line)}`, { hide_duration: null }
+                );
+                console.error("stderr", line);
+            }
         });
         const backend_subprocess = await command.spawn();
         store.backend_subprocess = backend_subprocess;
