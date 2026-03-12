@@ -7,7 +7,10 @@ in tests.
 
 from typing import Any
 from speech_recognition import Recognizer, Microphone
-from pyaudiowpatch import get_sample_size, paInt16
+try:
+    from pyaudiowpatch import get_sample_size, paInt16
+except ImportError:
+    from pyaudio import get_sample_size, paInt16
 from datetime import datetime
 
 

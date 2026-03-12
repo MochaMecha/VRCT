@@ -12,7 +12,10 @@ from typing import Any, Dict, List, Optional, Union
 from speech_recognition import Recognizer, AudioData, AudioFile
 from speech_recognition.exceptions import UnknownValueError
 from datetime import timedelta
-from pyaudiowpatch import get_sample_size, paInt16
+try:
+    from pyaudiowpatch import get_sample_size, paInt16
+except ImportError:
+    from pyaudio import get_sample_size, paInt16
 from .transcription_languages import transcription_lang
 from .transcription_whisper import getWhisperModel, checkWhisperWeight
 

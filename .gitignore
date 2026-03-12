@@ -49,3 +49,7 @@ dist-ssr
 /build
 error.txt
 config.json
+
+# Tauri build artifacts
+src-tauri/target/
+src-tauri/bin/

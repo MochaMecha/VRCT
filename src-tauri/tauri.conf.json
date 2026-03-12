@@ -34,7 +34,7 @@
     },
     "bundle": {
         "active": true,
-        "targets": "nsis",
+        "targets": ["deb", "appimage"],
         "publisher": "m's software",
         "copyright": "Copyright m's software",
         "licenseFile": "../LICENSE",
@@ -53,11 +53,9 @@
             "bin/_internal": "_internal",
             "plugins": "plugins"
         },
-        "windows": {
-            "nsis": {
-                "template": "nsis/template.nsi",
-                "installMode": "currentUser",
-                "displayLanguageSelector": true
+        "linux": {
+            "deb": {
+                "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1"]
             }
         }
     }
