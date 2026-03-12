@@ -5,6 +5,8 @@ They intentionally keep a thin API so the rest of the system can mock them
 in tests.
 """
 
+import os
+import sys
 from typing import Any
 from speech_recognition import Recognizer, Microphone
 try:
@@ -12,6 +14,18 @@ try:
 except ImportError:
     from pyaudio import get_sample_size, paInt16
 from datetime import datetime
+
+
+def _set_pulse_source(device: dict) -> None:
+    """On Linux, if *device* carries a ``_pulse_source`` key (set by
+    device_manager for PulseAudio/PipeWire monitor sources), set the
+    PULSE_SOURCE env-var so that PyAudio opens the correct monitor
+    source.  This must remain set for the lifetime of the audio stream
+    (not just during __init__) because Microphone.__enter__ is where
+    the stream is actually opened."""
+    pulse_src = device.get("_pulse_source") if isinstance(device, dict) else None
+    if pulse_src and sys.platform == "linux":
+        os.environ["PULSE_SOURCE"] = pulse_src
 
 
 class BaseRecorder:
@@ -64,6 +78,7 @@ class SelectedMicRecorder(BaseRecorder):
 
 class SelectedSpeakerRecorder(BaseRecorder):
     def __init__(self, device: dict, energy_threshold: int, dynamic_energy_threshold: bool, record_timeout: int) -> None:
+        _set_pulse_source(device)
         try:
             device_index = int(device.get('index', -1))
             sample_rate = int(device.get("defaultSampleRate", 16000))
@@ -130,6 +145,7 @@ class SelectedMicEnergyRecorder(BaseEnergyRecorder):
 
 class SelectedSpeakerEnergyRecorder(BaseEnergyRecorder):
     def __init__(self, device: dict) -> None:
+        _set_pulse_source(device)
         try:
             device_index = int(device.get('index', -1))
             sample_rate = int(device.get("defaultSampleRate", 16000))
@@ -239,6 +255,7 @@ class SelectedSpeakerEnergyAndAudioRecorder(BaseEnergyAndAudioRecorder):
         record_timeout: int = 5,
     ) -> None:
 
+        _set_pulse_source(device)
         try:
             device_index = int(device.get('index', -1))
             sample_rate = int(device.get("defaultSampleRate", 16000))

@@ -64,6 +64,93 @@ except Exception:  # pragma: no cover - optional runtime
 
 from utils import errorLogging
 
+
+def _get_pulse_monitor_sources() -> List[Dict[str, Any]]:
+    """Return PulseAudio/PipeWire monitor sources as dicts compatible with the speaker device list.
+
+    Each dict contains: index (PyAudio device index for 'pulse'), name (human-readable),
+    defaultSampleRate, maxInputChannels, and _pulse_source (the PA source name to set via
+    PULSE_SOURCE before opening the stream).
+    """
+    if sys.platform != "linux":
+        return []
+    import subprocess, json as _json
+    try:
+        result = subprocess.run(
+            ["pactl", "-f", "json", "list", "sources"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+        sources = _json.loads(result.stdout)
+    except Exception:
+        return []
+
+    # Find the PyAudio device index for 'pulse' (fallback to 'default')
+    pulse_device_index = None
+    try:
+        with _suppress_alsa_errors():
+            p = PyAudio()
+            try:
+                for i in range(p.get_device_count()):
+                    dev = p.get_device_info_by_index(i)
+                    if dev.get("name") == "pulse" and dev.get("maxInputChannels", 0) > 0:
+                        pulse_device_index = i
+                        break
+                if pulse_device_index is None:
+                    for i in range(p.get_device_count()):
+                        dev = p.get_device_info_by_index(i)
+                        if dev.get("name") == "default" and dev.get("maxInputChannels", 0) > 0:
+                            pulse_device_index = i
+                            break
+            finally:
+                p.terminate()
+    except Exception:
+        return []
+
+    if pulse_device_index is None:
+        return []
+
+    monitors = []
+    for src in sources:
+        name = src.get("name", "")
+        if ".monitor" not in name:
+            continue
+        desc = src.get("description", name)
+        # Parse sample rate from the format spec
+        sample_rate = 48000  # sensible default
+        try:
+            fmt = src.get("sample_specification", {})
+            if isinstance(fmt, dict):
+                sample_rate = int(fmt.get("sample_rate", 48000))
+            elif isinstance(fmt, str):
+                # e.g. "s32le 2ch 48000Hz"
+                for part in fmt.split():
+                    if part.endswith("Hz"):
+                        sample_rate = int(part[:-2])
+        except Exception:
+            pass
+        channels = 2
+        try:
+            ch = src.get("channel_map", [])
+            if isinstance(ch, list):
+                channels = len(ch) if ch else 2
+            elif isinstance(ch, str):
+                channels = ch.count(",") + 1
+        except Exception:
+            pass
+
+        monitors.append({
+            "index": pulse_device_index,
+            "name": desc,
+            "defaultSampleRate": float(sample_rate),
+            "maxInputChannels": channels,
+            "maxOutputChannels": 0,
+            "isLoopbackDevice": False,
+            "_pulse_source": name,
+        })
+    return monitors
+
 class Client(MMNotificationClient):
     """Callback client used by pycaw to detect device changes.
 
@@ -242,23 +329,9 @@ class DeviceManager:
                         except Exception:
                             pass
                     else:
-                        # Linux: PulseAudio/PipeWire expose monitor sources as input
-                        # devices with "Monitor" in the name. Also list output devices.
-                        try:
-                            for host_index in range(p.get_host_api_count()):
-                                host = p.get_host_api_info_by_index(host_index)
-                                device_count = host.get('deviceCount', 0)
-                                for device_index in range(device_count):
-                                    device = p.get_device_info_by_host_api_device_index(host_index, device_index)
-                                    name = device.get("name", "")
-                                    # Monitor sources (for capturing system audio)
-                                    if device.get("maxInputChannels", 0) > 0 and "monitor" in name.lower():
-                                        speaker_devices.append(device)
-                                    # Regular output devices
-                                    elif device.get("maxOutputChannels", 0) > 0:
-                                        speaker_devices.append(device)
-                        except Exception:
-                            pass
+                        # Linux: use PulseAudio/PipeWire monitor sources to capture
+                        # desktop audio (equivalent of WASAPI loopback on Windows).
+                        speaker_devices = _get_pulse_monitor_sources()
 
                     # deduplicate and sort
                     speaker_devices = [dict(t) for t in {tuple(d.items()) for d in speaker_devices}] or [{"index": -1, "name": "NoDevice"}]
@@ -289,13 +362,20 @@ class DeviceManager:
                         except Exception:
                             pass
                     else:
-                        # Linux: use the default output device from the default host API
+                        # Linux: pick the monitor source for the default PulseAudio sink
                         try:
-                            api_info = p.get_default_host_api_info()
-                            default_output_index = api_info.get("defaultOutputDevice", -1)
-                            if default_output_index >= 0:
-                                device = p.get_device_info_by_index(default_output_index)
-                                buffer_default_speaker_device = {"device": device}
+                            import subprocess as _sp, json as _json
+                            _res = _sp.run(["pactl", "get-default-sink"], capture_output=True, text=True, timeout=5)
+                            default_sink = _res.stdout.strip()
+                            default_monitor_name = default_sink + ".monitor"
+                            for dev in buffer_speaker_devices:
+                                if dev.get("_pulse_source") == default_monitor_name:
+                                    buffer_default_speaker_device = {"device": dev}
+                                    break
+                            else:
+                                # fallback: pick the first monitor source
+                                if buffer_speaker_devices and buffer_speaker_devices[0].get("name") != "NoDevice":
+                                    buffer_default_speaker_device = {"device": buffer_speaker_devices[0]}
                         except Exception:
                             pass
                 finally:
