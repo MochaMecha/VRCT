@@ -1,3 +1,24 @@
+# Linux Setup (from source)
+
+```bash
+# 1. Setup — installs system deps, Rust, Node.js, Python venv, and npm packages
+bash scripts/setup.sh
+
+# 2. Install — rebuild just the Python venv (if already set up)
+bash scripts/install.sh
+
+# 3. Build
+bash scripts/build.sh              # binary only
+
+# 4. Run
+./src-tauri/target/release/VRCT
+
+# Dev mode
+npm run dev
+```
+
+---
+
 <div align="center">
 
 <picture>
