@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 from typing import Any
+import numpy as np
 from speech_recognition import Recognizer, Microphone, AudioSource
 try:
     from pyaudiowpatch import get_sample_size, paInt16
@@ -52,7 +53,7 @@ class PulseMonitorSource(AudioSource):
             [
                 "parec",
                 "--device=" + self._pulse_source,
-                "--format=s16le",
+                "--format=float32le",
                 "--channels=" + str(self.channels),
                 "--rate=" + str(self.SAMPLE_RATE),
                 "--raw",
@@ -96,13 +97,20 @@ class PulseMonitorSource(AudioSource):
         # silently dropped so the Recognizer always gets fresh audio.
         _MAX_CHUNKS = 50
 
+        # Monitor sources deliver quieter audio than direct mic input because
+        # the signal passes through PipeWire's mixing/routing graph.  This
+        # gain compensates so that speech_recognition's energy threshold
+        # works at the same settings as for microphone input.
+        _MONITOR_GAIN = 8.0
+
         def __init__(self, process, chunk_size, channels):
             self._process = process
             self._chunk_size = chunk_size
             self._channels = channels
-            # bytes per read = chunk_size frames * channels * 2 bytes (s16le)
-            self._read_size = chunk_size * channels * 2
-            self._silence = b"\x00" * self._read_size
+            # parec outputs float32le (4 bytes/sample); we convert to s16le (2 bytes)
+            self._read_size = chunk_size * channels * 4  # float32le input
+            self._output_size = chunk_size * channels * 2  # s16le output
+            self._silence = b"\x00" * self._output_size
             # Recognizer accesses stream.pyaudio_stream directly
             self.pyaudio_stream = self
 
@@ -116,14 +124,24 @@ class PulseMonitorSource(AudioSource):
             self._reader.start()
 
         def _drain(self):
-            """Continuously read from parec and push into the circular buffer."""
+            """Continuously read from parec and push into the circular buffer.
+
+            parec delivers float32le samples (PipeWire's native internal
+            format).  We convert to s16le here so the rest of the pipeline
+            (speech_recognition, Whisper) sees standard 16-bit PCM.  Using
+            float32le avoids PipeWire's lossy s32le→s16le bit-depth
+            conversion that crushes quiet audio signals.
+            """
             try:
                 while True:
                     data = self._process.stdout.read(self._read_size)
                     if not data:
                         break
+                    # float32 [-1.0, 1.0] → int16 [-32768, 32767] with gain
+                    f32 = np.frombuffer(data, dtype=np.float32)
+                    s16 = np.clip(f32 * self._MONITOR_GAIN * 32767.0, -32768, 32767).astype(np.int16)
                     with self._cond:
-                        self._buf.append(data)
+                        self._buf.append(s16.tobytes())
                         self._cond.notify()
             finally:
                 with self._cond:
@@ -140,7 +158,10 @@ class PulseMonitorSource(AudioSource):
                 return self._silence
 
         def get_read_available(self):
-            return self._chunk_size if self._buf else 0
+            # Always report data available so the Recognizer attempts a read
+            # rather than immediately raising WaitTimeoutError.  read() blocks
+            # briefly if the buffer is empty, matching real PyAudio behaviour.
+            return self._chunk_size
 
         def is_stopped(self):
             return self._stopped

@@ -114,6 +114,7 @@ class Model:
         self.speaker_transcriber = None
         self.speaker_energy_recorder = None
         self.speaker_energy_plot_progressbar = None
+        self._shared_whisper_model = None
 
         self.previous_send_message = ""
         self.previous_receive_message = ""
@@ -711,6 +712,24 @@ class Model:
             result = ["NoDevice"]
         return result
 
+    def _getSharedWhisperModel(self):
+        """Return a shared WhisperModel instance, loading it once on first use."""
+        if self._shared_whisper_model is None:
+            if config.SELECTED_TRANSCRIPTION_ENGINE == "Whisper" and checkWhisperWeight(config.PATH_LOCAL, config.WHISPER_WEIGHT_TYPE):
+                from models.transcription.transcription_whisper import getWhisperModel
+                self._shared_whisper_model = getWhisperModel(
+                    config.PATH_LOCAL,
+                    config.WHISPER_WEIGHT_TYPE,
+                    device=config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device"],
+                    device_index=config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device_index"],
+                    compute_type=config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE,
+                )
+        return self._shared_whisper_model
+
+    def _clearSharedWhisperModel(self):
+        """Release the shared WhisperModel when no transcribers need it."""
+        self._shared_whisper_model = None
+
     def startMicTranscript(self, fnc):
         self.ensure_initialized()
         mic_host_name = config.SELECTED_MIC_HOST
@@ -750,6 +769,7 @@ class Model:
                 device=config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device"],
                 device_index=config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device_index"],
                 compute_type=config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE,
+                whisper_model=self._getSharedWhisperModel(),
             )
             def sendMicTranscript():
                 try:
@@ -863,6 +883,9 @@ class Model:
         # if isinstance(self.mic_get_energy, threadFnc):
         #     self.mic_get_energy.stop()
         #     self.mic_get_energy = None
+        # Release shared model when no transcribers are active
+        if self.speaker_transcriber is None:
+            self._clearSharedWhisperModel()
 
     def startCheckMicEnergy(self, fnc:Optional[Callable[[float], None]]=None) -> None:
         self.ensure_initialized()
@@ -945,6 +968,7 @@ class Model:
                 device=config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device"],
                 device_index=config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device_index"],
                 compute_type=config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE,
+                whisper_model=self._getSharedWhisperModel(),
             )
             def sendSpeakerTranscript():
                 try:
@@ -1006,6 +1030,9 @@ class Model:
         # if isinstance(self.speaker_get_energy, threadFnc):
         #     self.speaker_get_energy.stop()
         #     self.speaker_get_energy = None
+        # Release shared model when no transcribers are active
+        if self.mic_transcriber is None:
+            self._clearSharedWhisperModel()
 
     def startCheckSpeakerEnergy(self, fnc:Optional[Callable[[float], None]]=None) -> None:
         self.ensure_initialized()

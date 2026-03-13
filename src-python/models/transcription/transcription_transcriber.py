@@ -55,6 +55,7 @@ class AudioTranscriber:
         device: str = "cpu",
         device_index: int = 0,
         compute_type: str = "auto",
+        whisper_model: Optional[Any] = None,
     ) -> None:
         self.speaker = speaker
         self.phrase_timeout = phrase_timeout
@@ -74,7 +75,10 @@ class AudioTranscriber:
             "process_data_func": self.processSpeakerData if speaker else self.processMicData,
         }
 
-        if transcription_engine == "Whisper" and checkWhisperWeight(root, whisper_weight_type) is True:
+        if whisper_model is not None:
+            self.whisper_model = whisper_model
+            self.transcription_engine = "Whisper"
+        elif transcription_engine == "Whisper" and checkWhisperWeight(root, whisper_weight_type) is True:
             self.whisper_model = getWhisperModel(
                 root, whisper_weight_type, device=device, device_index=device_index, compute_type=compute_type
             )

@@ -1,6 +1,6 @@
-torch==2.7.0
+torch==2.10.0
 faster-whisper==1.1.1
-ctranslate2==4.6.0
+ctranslate2==4.7.1
 transformers==4.40.2
 pillow == 10.0.0
 PyAudio==0.2.14
