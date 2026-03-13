@@ -8,13 +8,11 @@ bash scripts/setup.sh
 bash scripts/install.sh
 
 # 3. Build
-bash scripts/build.sh              # binary only
+bash scripts/build.sh
 
 # 4. Run
 ./src-tauri/target/release/VRCT
 
-# Dev mode
-npm run dev
 ```
 
 ---
